@@ -12,10 +12,12 @@ from app.schemas.catalogs import (
     AccountTypeOut,
     AccountTypeUpdate,
     CategoryCreate,
+    CategoryOrder,
     CategoryOut,
     CategoryUpdate,
 )
 from app.services import catalogs as svc
+from app.services.catalogs import UNSET
 
 router = APIRouter(prefix="/catalogs", tags=["catalogs"])
 
@@ -34,7 +36,7 @@ async def list_categories(
         stmt = stmt.where(Category.kind == kind)
     if not include_inactive:
         stmt = stmt.where(Category.is_active.is_(True))
-    rows = await db.execute(stmt.order_by(Category.name))
+    rows = await db.execute(stmt.order_by(Category.sort_order, Category.name))
     return list(rows.scalars().all())
 
 
@@ -56,6 +58,15 @@ async def create_category(
     )
 
 
+@router.put("/categories/order", status_code=status.HTTP_204_NO_CONTENT)
+async def reorder_categories(
+    db: DbSession, space_and_member: EditorSpace, payload: CategoryOrder
+) -> None:
+    """CAT-09: persist the manual order of a group of sibling categories."""
+    space, _ = space_and_member
+    await svc.reorder_categories(db, space.id, payload.ids)
+
+
 @router.patch("/categories/{category_id}", response_model=CategoryOut)
 async def update_category(
     db: DbSession,
@@ -70,6 +81,8 @@ async def update_category(
         category_id,
         name=payload.name,
         expense_nature=payload.expense_nature,
+        # CAT-10: only forward parent_id when the client sent it (null = root).
+        parent_id=payload.parent_id if "parent_id" in payload.model_fields_set else UNSET,
         icon=payload.icon,
         color=payload.color,
         is_active=payload.is_active,

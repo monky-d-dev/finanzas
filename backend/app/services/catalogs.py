@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.text import normalize_name
 from app.models.accounts import Account
+from app.models.budgets import Budget
 from app.models.catalogs import (
+    SORT_ORDER_LAST,
     AccountBehavior,
     AccountType,
     Category,
@@ -58,7 +60,7 @@ def seed_catalogs(
     session: AsyncSession, space_id: uuid.UUID, created_by: uuid.UUID, currency: str = "MXN"
 ) -> None:
     """CAT-02: seed default categories, account types and the cash account."""
-    for name, nature in SEED_EXPENSE_CATEGORIES:
+    for position, (name, nature) in enumerate(SEED_EXPENSE_CATEGORIES):
         session.add(
             Category(
                 space_id=space_id,
@@ -66,16 +68,18 @@ def seed_catalogs(
                 name_normalized=normalize_name(name),
                 kind=CategoryKind.expense,
                 expense_nature=nature,
+                sort_order=position,  # CAT-09: seed order = list order
                 created_by=created_by,
             )
         )
-    for name in SEED_INCOME_CATEGORIES:
+    for position, name in enumerate(SEED_INCOME_CATEGORIES):
         session.add(
             Category(
                 space_id=space_id,
                 name=name,
                 name_normalized=normalize_name(name),
                 kind=CategoryKind.income,
+                sort_order=position,
                 created_by=created_by,
             )
         )
@@ -139,6 +143,26 @@ async def get_category(
     return category
 
 
+async def _next_sort_order(
+    session: AsyncSession,
+    space_id: uuid.UUID,
+    kind: CategoryKind,
+    parent_id: uuid.UUID | None,
+) -> int:
+    """CAT-09: position after the last real sibling (roots of a kind, or the
+    children of one parent). Auto-created categories at SORT_ORDER_LAST are
+    ignored so a new category does not jump a million places."""
+    stmt = select(func.max(Category.sort_order)).where(
+        Category.space_id == space_id,
+        Category.sort_order < SORT_ORDER_LAST,
+        Category.parent_id == parent_id if parent_id is not None else Category.parent_id.is_(None),
+    )
+    if parent_id is None:
+        stmt = stmt.where(Category.kind == kind)
+    current: int | None = await session.scalar(stmt)
+    return 0 if current is None else current + 1
+
+
 async def create_category(
     session: AsyncSession,
     space_id: uuid.UUID,
@@ -178,6 +202,7 @@ async def create_category(
         kind=kind,
         expense_nature=expense_nature,
         parent_id=parent_id,
+        sort_order=await _next_sort_order(session, space_id, kind, parent_id),
         icon=icon,
         color=color,
         created_by=created_by,
@@ -188,6 +213,101 @@ async def create_category(
     return category
 
 
+class _Unset:
+    """Sentinel: distinguishes "parent_id not sent" from "parent_id = null"."""
+
+
+UNSET = _Unset()
+
+
+async def _move_category(
+    session: AsyncSession,
+    space_id: uuid.UUID,
+    category: Category,
+    new_parent_id: uuid.UUID | None,
+) -> None:
+    """CAT-10: change the parent of a category (None = make it a root)."""
+    if new_parent_id == category.parent_id:
+        return
+    if new_parent_id is None:
+        category.parent_id = None
+        category.sort_order = await _next_sort_order(session, space_id, category.kind, None)
+        return
+    if new_parent_id == category.id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Una categoría no puede ser su propio padre"
+        )
+    parent = await get_category(session, space_id, new_parent_id)  # 404 cross-space
+    if parent.parent_id is not None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Máximo 2 niveles: el padre no puede ser una subcategoría",
+        )
+    if parent.kind != category.kind:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "La subcategoría debe ser del mismo tipo que su padre",
+        )
+    if await session.scalar(select(exists().where(Category.parent_id == category.id))):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Máximo 2 niveles: una categoría con subcategorías no puede volverse subcategoría",
+        )
+    # CAT-10: budgets only accept root categories (PRE-01).
+    if await session.scalar(select(exists().where(Budget.category_id == category.id))):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "La categoría tiene presupuestos; elimínalos antes de volverla subcategoría",
+        )
+    category.parent_id = parent.id
+    category.sort_order = await _next_sort_order(session, space_id, category.kind, parent.id)
+
+
+async def reorder_categories(
+    session: AsyncSession, space_id: uuid.UUID, ids: list[uuid.UUID]
+) -> None:
+    """CAT-09: set the order of a group of siblings (all roots of one kind, or
+    all children of one parent). Siblings not listed keep their relative order
+    after the listed ones."""
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ids de categoría repetidos")
+    rows = (
+        (
+            await session.execute(
+                select(Category).where(Category.space_id == space_id, Category.id.in_(ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {c.id: c for c in rows}
+    if len(by_id) != len(ids) or any(c.is_system for c in rows):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Categoría no encontrada")  # GLO-05
+    first = rows[0]
+    if any(c.parent_id != first.parent_id or c.kind != first.kind for c in rows):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Solo se pueden ordenar hermanas: mismas raíces del mismo tipo, o del mismo padre",
+        )
+    siblings_stmt = select(Category).where(
+        Category.space_id == space_id,
+        Category.kind == first.kind,
+        Category.is_system.is_(False),
+        Category.id.not_in(ids),
+        Category.parent_id == first.parent_id
+        if first.parent_id is not None
+        else Category.parent_id.is_(None),
+    )
+    rest = (
+        (await session.execute(siblings_stmt.order_by(Category.sort_order, Category.name)))
+        .scalars()
+        .all()
+    )
+    for position, category in enumerate([*(by_id[i] for i in ids), *rest]):
+        category.sort_order = position
+    await session.commit()
+
+
 async def update_category(
     session: AsyncSession,
     space_id: uuid.UUID,
@@ -195,11 +315,14 @@ async def update_category(
     *,
     name: str | None = None,
     expense_nature: ExpenseNature | None = None,
+    parent_id: uuid.UUID | None | _Unset = UNSET,
     icon: str | None = None,
     color: str | None = None,
     is_active: bool | None = None,
 ) -> Category:
     category = await get_category(session, space_id, category_id)
+    if not isinstance(parent_id, _Unset):
+        await _move_category(session, space_id, category, parent_id)
 
     if name is not None and name != category.name:
         category.name_normalized = await _ensure_unique_category(

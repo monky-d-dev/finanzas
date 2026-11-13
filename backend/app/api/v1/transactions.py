@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, status
 from sqlalchemy import func, or_, select
 
 from app.core.deps import ActiveSpace, CurrentUser, DbSession, EditorSpace
+from app.models.catalogs import Category
 from app.models.transactions import Transaction, TransactionType
 from app.schemas.accounts import MoveCycle
 from app.schemas.transactions import (
@@ -87,7 +88,13 @@ async def list_transactions(
     if type is not None:
         filters.append(Transaction.type == type)
     if category_id is not None:
-        filters.append(Transaction.category_id == category_id)
+        # CAT-11: a root category also matches its subcategories.
+        children = select(Category.id).where(
+            Category.space_id == space.id, Category.parent_id == category_id
+        )
+        filters.append(
+            or_(Transaction.category_id == category_id, Transaction.category_id.in_(children))
+        )
     if account_id is not None:
         # TXN-10: the filter means "movements touching this account", so
         # transfers match on either leg (source or destination).

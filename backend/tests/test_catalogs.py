@@ -2,6 +2,8 @@
 
 import uuid
 
+from freezegun import freeze_time
+
 from app.models.spaces import SpaceMember, SpaceRole
 from tests.conftest import auth_headers, bootstrap_space
 
@@ -350,3 +352,242 @@ async def test_esp03_viewer_cannot_mutate_catalogs(client, db_session):
     assert res.status_code == 403
     res = await client.delete(f"/api/v1/catalogs/categories/{cat_id}", headers=viewer_headers)
     assert res.status_code == 403
+
+
+# --- CAT-09 / CAT-10 / CAT-11 ---------------------------------------------------
+
+CATS = "/api/v1/catalogs/categories"
+
+
+async def _create_cat(client, ctx, name, **kw):
+    res = await client.post(
+        CATS, headers=ctx["headers"], json={"name": name, "kind": "expense", **kw}
+    )
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+async def _list_cats(client, ctx, **params):
+    res = await client.get(CATS, headers=ctx["headers"], params=params)
+    assert res.status_code == 200
+    return res.json()
+
+
+async def test_cat09_seed_order_and_new_goes_last(client):
+    """CAT-09: la lista sale por sort_order; una categoría nueva va al final."""
+    ctx = await bootstrap_space(client)
+    cats = await _list_cats(client, ctx, kind="expense")
+    orders = [c["sort_order"] for c in cats]
+    assert orders == sorted(orders)
+    new = await _create_cat(client, ctx, "Zzz Última")
+    cats = await _list_cats(client, ctx, kind="expense")
+    assert cats[-1]["id"] == new["id"]
+    # Otra más: queda después de la anterior aunque su nombre sea alfabéticamente menor.
+    newer = await _create_cat(client, ctx, "Aaa Nueva")
+    cats = await _list_cats(client, ctx, kind="expense")
+    assert [c["id"] for c in cats][-2:] == [new["id"], newer["id"]]
+
+
+async def test_cat09_reorder_roots(client):
+    """CAT-09: PUT /categories/order reasigna sort_order 0..n-1 y el GET lo respeta."""
+    ctx = await bootstrap_space(client)
+    cats = await _list_cats(client, ctx, kind="expense")
+    ids = [c["id"] for c in cats]
+    new_order = [ids[-1], *ids[:-1]]  # la última pasa a primera
+    res = await client.put(f"{CATS}/order", headers=ctx["headers"], json={"ids": new_order})
+    assert res.status_code == 204, res.text
+    after = await _list_cats(client, ctx, kind="expense")
+    assert [c["id"] for c in after] == new_order
+    assert [c["sort_order"] for c in after] == list(range(len(new_order)))
+
+
+async def test_cat09_reorder_children_within_parent(client):
+    ctx = await bootstrap_space(client)
+    parent = ctx["categories"]["Transporte"]["id"]
+    a = await _create_cat(client, ctx, "Mantenimiento auto", parent_id=parent)
+    b = await _create_cat(client, ctx, "Lavado y estética", parent_id=parent)
+    res = await client.put(
+        f"{CATS}/order", headers=ctx["headers"], json={"ids": [b["id"], a["id"]]}
+    )
+    assert res.status_code == 204, res.text
+    cats = await _list_cats(client, ctx, kind="expense")
+    kids = [c["id"] for c in cats if c["parent_id"] == parent]
+    assert kids == [b["id"], a["id"]]
+
+
+async def test_cat09_reorder_rejects_mixed_levels_and_foreign_ids(client):
+    ctx = await bootstrap_space(client)
+    parent = ctx["categories"]["Transporte"]["id"]
+    child = await _create_cat(client, ctx, "Mantenimiento auto", parent_id=parent)
+    # Raíz + subcategoría juntas ⇒ 422.
+    res = await client.put(
+        f"{CATS}/order",
+        headers=ctx["headers"],
+        json={"ids": [parent, child["id"]]},
+    )
+    assert res.status_code == 422
+    # Mezcla de kinds ⇒ 422.
+    res = await client.put(
+        f"{CATS}/order",
+        headers=ctx["headers"],
+        json={"ids": [parent, ctx["categories"]["Nómina"]["id"]]},
+    )
+    assert res.status_code == 422
+    # Id inexistente / de otro espacio ⇒ 404 (GLO-05).
+    res = await client.put(
+        f"{CATS}/order", headers=ctx["headers"], json={"ids": [str(uuid.uuid4())]}
+    )
+    assert res.status_code == 404
+    other = await bootstrap_space(client)
+    res = await client.put(
+        f"{CATS}/order",
+        headers=ctx["headers"],
+        json={"ids": [other["categories"]["Comida"]["id"]]},
+    )
+    assert res.status_code == 404
+
+
+async def test_cat09_viewer_cannot_reorder(client, db_session):
+    ctx = await bootstrap_space(client)
+    viewer_id = uuid.uuid4()
+    await client.get("/api/v1/me", headers=auth_headers(viewer_id))
+    db_session.add(
+        SpaceMember(space_id=uuid.UUID(ctx["space_id"]), user_id=viewer_id, role=SpaceRole.viewer)
+    )
+    await db_session.commit()
+    headers = {**auth_headers(viewer_id), "X-Space-Id": ctx["space_id"]}
+    res = await client.put(
+        f"{CATS}/order",
+        headers=headers,
+        json={"ids": [ctx["categories"]["Comida"]["id"]]},
+    )
+    assert res.status_code == 403
+
+
+async def test_cat10_move_root_to_subcategory_and_back(client):
+    """CAT-10: PATCH parent_id convierte en subcategoría y de vuelta en raíz."""
+    ctx = await bootstrap_space(client)
+    parent = ctx["categories"]["Transporte"]["id"]
+    cat = await _create_cat(client, ctx, "Lavado", expense_nature="discretionary")
+    res = await client.patch(
+        f"{CATS}/{cat['id']}", headers=ctx["headers"], json={"parent_id": parent}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["parent_id"] == parent
+    assert res.json()["expense_nature"] == "discretionary"  # conserva la suya
+    res = await client.patch(
+        f"{CATS}/{cat['id']}", headers=ctx["headers"], json={"parent_id": None}
+    )
+    assert res.status_code == 200
+    assert res.json()["parent_id"] is None
+
+
+async def test_cat10_move_rules(client):
+    ctx = await bootstrap_space(client)
+    transporte = ctx["categories"]["Transporte"]["id"]
+    comida = ctx["categories"]["Comida"]["id"]
+    child = await _create_cat(client, ctx, "Mantenimiento", parent_id=transporte)
+    # Con hijas no puede volverse subcategoría (CAT-06: 2 niveles).
+    res = await client.patch(
+        f"{CATS}/{transporte}", headers=ctx["headers"], json={"parent_id": comida}
+    )
+    assert res.status_code == 422
+    # El padre no puede ser una subcategoría.
+    res = await client.patch(
+        f"{CATS}/{comida}", headers=ctx["headers"], json={"parent_id": child["id"]}
+    )
+    assert res.status_code == 422
+    # Ni ella misma.
+    res = await client.patch(f"{CATS}/{comida}", headers=ctx["headers"], json={"parent_id": comida})
+    assert res.status_code == 422
+    # Distinto kind ⇒ 422.
+    res = await client.patch(
+        f"{CATS}/{comida}",
+        headers=ctx["headers"],
+        json={"parent_id": ctx["categories"]["Nómina"]["id"]},
+    )
+    assert res.status_code == 422
+    # Padre de otro espacio ⇒ 404 (GLO-05).
+    other = await bootstrap_space(client)
+    res = await client.patch(
+        f"{CATS}/{comida}",
+        headers=ctx["headers"],
+        json={"parent_id": other["categories"]["Transporte"]["id"]},
+    )
+    assert res.status_code == 404
+
+
+@freeze_time("2026-06-20 18:00:00")
+async def test_cat10_move_keeps_transactions_and_aggregates_to_root(client):
+    """CAT-10 + CAT-06: la transacción conserva su categoría; el total pasa a la nueva raíz."""
+    from tests.test_dashboard import add_expense, summary
+
+    ctx = await bootstrap_space(client)
+    cat = await _create_cat(client, ctx, "Lavado")
+    txn = await add_expense(client, ctx, "200.00", category_id=cat["id"])
+    body = await summary(client, ctx)
+    assert {r["category_name"]: r["total"] for r in body["by_category"]} == {"Lavado": "200.00"}
+
+    res = await client.patch(
+        f"{CATS}/{cat['id']}",
+        headers=ctx["headers"],
+        json={"parent_id": ctx["categories"]["Transporte"]["id"]},
+    )
+    assert res.status_code == 200
+    res = await client.get(f"/api/v1/transactions/{txn['id']}", headers=ctx["headers"])
+    assert res.json()["category_id"] == cat["id"]
+    body = await summary(client, ctx)
+    totals = {r["category_name"]: r["total"] for r in body["by_category"]}
+    assert totals == {"Transporte": "200.00"}  # suma a la raíz (CAT-06)
+    assert body["totals"]["expenses"] == "200.00"
+
+
+async def test_cat10_category_with_budget_cannot_become_subcategory(client):
+    from tests.test_budgets import make_budget
+
+    ctx = await bootstrap_space(client)
+    assert (await make_budget(client, ctx, category="Comida")).status_code == 201
+    res = await client.patch(
+        f"{CATS}/{ctx['categories']['Comida']['id']}",
+        headers=ctx["headers"],
+        json={"parent_id": ctx["categories"]["Transporte"]["id"]},
+    )
+    assert res.status_code == 409
+
+
+async def test_cat11_filter_by_root_includes_subcategories(client):
+    """CAT-11: filtrar movimientos por una raíz incluye sus subcategorías."""
+    from tests.test_dashboard import add_expense
+
+    ctx = await bootstrap_space(client)
+    transporte = ctx["categories"]["Transporte"]["id"]
+    sub = await _create_cat(client, ctx, "Mantenimiento auto", parent_id=transporte)
+    root_txn = await add_expense(client, ctx, "100.00", category="Transporte")
+    res = await client.post(
+        "/api/v1/transactions",
+        headers=ctx["headers"],
+        json={
+            "type": "expense",
+            "date": "2026-06-05",
+            "amount": "50.00",
+            "currency": "MXN",
+            "category_id": sub["id"],
+            "account_id": ctx["accounts"]["Efectivo"]["id"],
+        },
+    )
+    assert res.status_code == 201, res.text
+    other = await add_expense(client, ctx, "10.00", category="Comida")
+    res = await client.get(
+        "/api/v1/transactions",
+        headers=ctx["headers"],
+        params={"category_id": transporte},
+    )
+    ids = {t["id"] for t in res.json()["items"]}
+    assert root_txn["id"] in ids
+    assert other["id"] not in ids
+    assert len(ids) == 2
+    # Filtrar por la subcategoría devuelve solo la suya.
+    res = await client.get(
+        "/api/v1/transactions", headers=ctx["headers"], params={"category_id": sub["id"]}
+    )
+    assert len(res.json()["items"]) == 1

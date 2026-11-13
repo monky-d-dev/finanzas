@@ -3,7 +3,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -71,6 +71,11 @@ class AccountType(Base, AuditMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+# CAT-09: categories created outside the catalog service (auto-created ones)
+# sort after every manually ordered sibling; ties fall back to the name.
+SORT_ORDER_LAST = 1_000_000
+
+
 class Category(Base, AuditMixin):
     __tablename__ = "categories"
     __table_args__ = (
@@ -98,6 +103,10 @@ class Category(Base, AuditMixin):
     # CAT-06: max 2 levels (validated in service).
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("categories.id", ondelete="RESTRICT")
+    )
+    # CAT-09: manual order among siblings (roots of a kind, or children of a parent).
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=SORT_ORDER_LAST, server_default=str(SORT_ORDER_LAST)
     )
     # IMP-03: hidden seed category "Sin categoría" is not user-facing.
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

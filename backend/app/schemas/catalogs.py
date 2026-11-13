@@ -15,6 +15,7 @@ class CategoryOut(BaseModel):
     kind: CategoryKind
     expense_nature: ExpenseNature | None
     parent_id: uuid.UUID | None
+    sort_order: int
     icon: str | None
     color: str | None
     is_active: bool
@@ -32,9 +33,18 @@ class CategoryCreate(BaseModel):
 class CategoryUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=60)
     expense_nature: ExpenseNature | None = None
+    # CAT-10: present ⇒ move (UUID = become subcategory, null = become root);
+    # absent ⇒ unchanged. Distinguished through `model_fields_set`.
+    parent_id: uuid.UUID | None = None
     icon: str | None = Field(default=None, max_length=40)
     color: str | None = Field(default=None, max_length=20)
     is_active: bool | None = None
+
+
+class CategoryOrder(BaseModel):
+    """CAT-09: ordered sibling ids."""
+
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
 
 
 # --- Account types (CAT-08) -----------------------------------------------------
