@@ -9,6 +9,7 @@ export interface CategoryOut {
   kind: "expense" | "income";
   expense_nature: "fixed" | "variable" | "discretionary" | null;
   parent_id: string | null;
+  sort_order: number;
   icon: string | null;
   color: string | null;
   is_active: boolean;
@@ -86,6 +87,8 @@ export function useUpdateCategory() {
       id: string;
       name?: string;
       expense_nature?: string | null;
+      // CAT-10: UUID = volverla subcategoría, null = volverla raíz.
+      parent_id?: string | null;
       is_active?: boolean;
     }) =>
       api<CategoryOut>(`/api/v1/catalogs/categories/${id}`, {
@@ -102,5 +105,27 @@ export function useDeleteCategory() {
     mutationFn: (id: string) =>
       api<void>(`/api/v1/catalogs/categories/${id}`, { method: "DELETE" }),
     onSuccess: invalidate,
+  });
+}
+
+// CAT-09: orden manual entre hermanas. El caché se actualiza al instante para
+// que la fila no "rebote" mientras el servidor responde.
+export function useReorderCategories() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) =>
+      api<void>("/api/v1/catalogs/categories/order", {
+        method: "PUT",
+        body: JSON.stringify({ ids }),
+      }),
+    onMutate: (ids) => {
+      const position = new Map(ids.map((id, i) => [id, i]));
+      qc.setQueriesData<CategoryOut[]>({ queryKey: ["categories"] }, (old) =>
+        old
+          ?.map((c) => (position.has(c.id) ? { ...c, sort_order: position.get(c.id)! } : c))
+          .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)),
+      );
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["categories"] }),
   });
 }

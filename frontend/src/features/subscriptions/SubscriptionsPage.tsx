@@ -6,6 +6,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { addDays, format } from "date-fns";
 import { useAccounts, type AccountOut } from "../../api/accounts";
 import { useCategories } from "../../api/catalogs";
+import { categoryOptionLabel, orderCategoryTree } from "../../lib/categories";
 import {
   useCaptureBill,
   useCreateRecurringRule,
@@ -203,8 +204,10 @@ function RuleForm({
   // REC-15: solo aplica a fechas de calendario (quincenal y mensual/bimestral).
   const canWeekendAdjust = frequency === "semimonthly" || byMonth;
   const categoryKind = type === "expense" ? "expense" : "income";
-  const categoryOptions = (categories.data ?? []).filter(
-    (c) => c.kind === categoryKind && (c.is_active || c.id === categoryId),
+  const categoryOptions = orderCategoryTree(
+    (categories.data ?? []).filter(
+      (c) => c.kind === categoryKind && (c.is_active || c.id === categoryId),
+    ),
   );
   const pending = create.isPending || update.isPending;
 
@@ -372,7 +375,7 @@ function RuleForm({
           <option value="">Selecciona…</option>
           {categoryOptions.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name}
+              {categoryOptionLabel(c)}
             </option>
           ))}
         </select>

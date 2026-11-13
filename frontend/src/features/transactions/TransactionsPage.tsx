@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useCategories } from "../../api/catalogs";
+import { categoryOptionLabel, orderCategoryTree } from "../../lib/categories";
 import {
   hasBalance,
   isLoan,
@@ -542,14 +543,16 @@ export default function TransactionsPage() {
 
   const filterCategories = useMemo(
     () =>
-      (categories.data ?? []).filter((c) =>
-        filterType === "expense"
-          ? c.kind === "expense"
-          : filterType === "income"
-            ? c.kind === "income"
-            : filterType === "transfer"
-              ? false
-              : true,
+      orderCategoryTree(
+        (categories.data ?? []).filter((c) =>
+          filterType === "expense"
+            ? c.kind === "expense"
+            : filterType === "income"
+              ? c.kind === "income"
+              : filterType === "transfer"
+                ? false
+                : true,
+        ),
       ),
     [categories.data, filterType],
   );
@@ -594,13 +597,15 @@ export default function TransactionsPage() {
   }, [filterMode, rangeFrom, rangeTo]);
   const tray = useTransactions({ needs_review: true });
 
-  const visibleCategories = (categories.data ?? []).filter(
-    (c) => c.kind === (type === "income" ? "income" : "expense"),
+  const visibleCategories = orderCategoryTree(
+    (categories.data ?? []).filter((c) => c.kind === (type === "income" ? "income" : "expense")),
   );
   const visibleEditCategories = useMemo(
     () =>
-      (categories.data ?? []).filter(
-        (c) => c.kind === (editType === "income" ? "income" : "expense"),
+      orderCategoryTree(
+        (categories.data ?? []).filter(
+          (c) => c.kind === (editType === "income" ? "income" : "expense"),
+        ),
       ),
     [categories.data, editType],
   );
@@ -830,7 +835,7 @@ export default function TransactionsPage() {
               >
                 <option value="">Selecciona…</option>
                 {visibleCategories.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
+                  <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
                 ))}
               </select>
             </div>
@@ -1145,18 +1150,18 @@ export default function TransactionsPage() {
                   <>
                     <optgroup label="Gastos">
                       {filterCategories.filter((c) => c.kind === "expense").map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
+                        <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
                       ))}
                     </optgroup>
                     <optgroup label="Ingresos">
                       {filterCategories.filter((c) => c.kind === "income").map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
+                        <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
                       ))}
                     </optgroup>
                   </>
                 ) : (
                   filterCategories.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
+                    <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
                   ))
                 )}
               </select>
@@ -1678,7 +1683,7 @@ export default function TransactionsPage() {
                   >
                     <option value="">Selecciona…</option>
                     {visibleEditCategories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id}>{categoryOptionLabel(c)}</option>
                     ))}
                   </select>
                 </div>

@@ -6,6 +6,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { hasBalance, useAccounts, type AccountOut } from "../../api/accounts";
 import { useCategories } from "../../api/catalogs";
+import { categoryOptionLabel, orderCategoryTree } from "../../lib/categories";
 import {
   useCommitments,
   useCreateCommitment,
@@ -56,7 +57,7 @@ function MoneyInput({
 function useExpenseCategories() {
   const categories = useCategories();
   return useMemo(
-    () => (categories.data ?? []).filter((c) => c.kind === "expense"),
+    () => orderCategoryTree((categories.data ?? []).filter((c) => c.kind === "expense")),
     [categories.data],
   );
 }
@@ -206,7 +207,7 @@ function CommitmentForm({
           <option value="">Elegir al abonar</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name}
+              {categoryOptionLabel(c)}
             </option>
           ))}
         </select>
@@ -455,7 +456,7 @@ function AbonoForm({
           <option value="">Selecciona…</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name}
+              {categoryOptionLabel(c)}
             </option>
           ))}
         </select>
@@ -596,7 +597,7 @@ function ThirdPartyForm({
           <option value="">Selecciona…</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name}
+              {categoryOptionLabel(c)}
             </option>
           ))}
         </select>

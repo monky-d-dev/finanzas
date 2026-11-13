@@ -12,6 +12,7 @@ import {
 } from "../../api/msi";
 import { useAccounts } from "../../api/accounts";
 import { useCategories } from "../../api/catalogs";
+import { categoryOptionLabel, orderCategoryTree } from "../../lib/categories";
 import { formatMoney } from "../../lib/money";
 import { formatDate } from "../../lib/dates";
 import Icon from "../../components/ui/Icon";
@@ -112,8 +113,8 @@ function BackfillForm({ onDone }: { onDone: () => void }) {
   });
 
   const activeCards = (accounts.data ?? []).filter((c) => c.is_active && c.behavior === "credit");
-  const expenseCategories = (categories.data ?? []).filter(
-    (c) => c.kind === "expense" && c.is_active,
+  const expenseCategories = orderCategoryTree(
+    (categories.data ?? []).filter((c) => c.kind === "expense" && c.is_active),
   );
 
   function set(key: string, value: string | boolean) {
@@ -227,7 +228,7 @@ function BackfillForm({ onDone }: { onDone: () => void }) {
             <option value="">Selecciona categoría…</option>
             {expenseCategories.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name}
+                {categoryOptionLabel(c)}
               </option>
             ))}
           </select>
