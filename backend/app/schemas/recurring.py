@@ -125,7 +125,7 @@ class PendingBillOut(BaseModel):
 
 
 class BillCapture(BaseModel):
-    scheduled_date: date
+    scheduled_date: dt.date
     amount: Money
     date: dt.date | None = None  # default: scheduled_date
 
