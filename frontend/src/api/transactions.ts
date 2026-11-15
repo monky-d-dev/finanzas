@@ -47,6 +47,8 @@ export interface TransactionFilters {
   offset?: number;
 }
 
+export type ExpenseNature = "fixed" | "variable" | "discretionary";
+
 export interface TransactionBody {
   type: string;
   date: string;
@@ -62,6 +64,7 @@ export interface TransactionBody {
   target_statement_id?: string | null; // TXN-09: explicit statement for TDC payment
   event_id?: string | null; // EVT-02
   commitment_id?: string | null; // CXP-03
+  expense_nature_override?: ExpenseNature | null; // CAT-03: null = la de la categoría
 }
 
 export interface DuplicateQuery {

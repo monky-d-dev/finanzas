@@ -56,6 +56,11 @@ class TransactionInput:
     commitment_id: uuid.UUID | None = None  # CXP-03: abono to a vendor commitment
 
 
+def _nature_override(data: TransactionInput) -> ExpenseNature | None:
+    """CAT-03: only an expense carries a nature; income/transfer drop it."""
+    return data.expense_nature_override if data.type == TransactionType.expense else None
+
+
 async def _validate_category(
     session: AsyncSession,
     space_id: uuid.UUID,
@@ -411,7 +416,7 @@ async def create_transaction(
         currency=data.currency,
         fx_rate_to_base=fx_rate,
         category_id=data.category_id,
-        expense_nature_override=data.expense_nature_override,
+        expense_nature_override=_nature_override(data),  # CAT-03
         account_id=data.account_id,
         account_to_id=data.account_to_id,
         amount_to=data.amount_to,
@@ -521,7 +526,7 @@ async def update_transaction(
     txn.amount = data.amount
     txn.currency = data.currency
     txn.category_id = data.category_id
-    txn.expense_nature_override = data.expense_nature_override
+    txn.expense_nature_override = _nature_override(data)  # CAT-03
     txn.account_id = data.account_id
     txn.account_to_id = data.account_to_id
     txn.amount_to = data.amount_to

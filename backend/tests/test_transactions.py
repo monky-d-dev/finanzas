@@ -217,6 +217,61 @@ async def test_txn05_update_basic_fields(client):
     assert body["category_id"] == ctx["categories"]["Transporte"]["id"]
 
 
+async def test_cat03_nature_override_set_kept_and_cleared_on_edit(client):
+    """CAT-03: the nature override is set from the edit modal, survives a
+    plain edit that resends it, can be cleared (null = category's nature) and
+    is dropped when the movement stops being an expense."""
+    ctx = await bootstrap_space(client)
+    h = ctx["headers"]
+    res = await client.post("/api/v1/transactions", headers=h, json=expense_payload(ctx))
+    txn_id = res.json()["id"]
+    assert res.json()["expense_nature_override"] is None
+
+    # Comida is variable by default; mark this one as discretionary.
+    res = await client.put(
+        f"/api/v1/transactions/{txn_id}",
+        headers=h,
+        json=expense_payload(ctx, expense_nature_override="discretionary"),
+    )
+    assert res.status_code == 200
+    assert res.json()["expense_nature_override"] == "discretionary"
+
+    summary = await client.get("/api/v1/dashboard/summary?month=2026-06", headers=h)
+    by_nature = summary.json()["by_nature"]
+    assert by_nature["discretionary"] == "150.50"
+    assert by_nature.get("variable", "0.00") in ("0.00", "0")
+
+    # Editing another field while resending the override keeps it.
+    res = await client.put(
+        f"/api/v1/transactions/{txn_id}",
+        headers=h,
+        json=expense_payload(ctx, description="Pedida", expense_nature_override="discretionary"),
+    )
+    assert res.json()["expense_nature_override"] == "discretionary"
+
+    # null goes back to the category's nature.
+    res = await client.put(
+        f"/api/v1/transactions/{txn_id}",
+        headers=h,
+        json=expense_payload(ctx, expense_nature_override=None),
+    )
+    assert res.json()["expense_nature_override"] is None
+
+    # An income never stores a nature, even if one is sent.
+    res = await client.put(
+        f"/api/v1/transactions/{txn_id}",
+        headers=h,
+        json=expense_payload(
+            ctx,
+            type="income",
+            category_id=ctx["categories"]["Nómina"]["id"],
+            expense_nature_override="fixed",
+        ),
+    )
+    assert res.status_code == 200
+    assert res.json()["expense_nature_override"] is None
+
+
 async def test_txn05_update_blocked_for_msi(client, db_session):
     """TXN-05 + MSI-08: editar transacción con plan MSI activo debe rechazarse."""
     from app.models.transactions import Transaction

@@ -23,6 +23,7 @@ import {
   useDeleteTransaction,
   useUpdateTransaction,
   useTransactions,
+  type ExpenseNature,
   type TransactionBody,
   type TransactionOut,
 } from "../../api/transactions";
@@ -47,6 +48,7 @@ import { formatDate } from "../../lib/dates";
 import Modal from "../../components/ui/Modal";
 import AccountOptions from "../../components/AccountOptions";
 import Icon from "../../components/ui/Icon";
+import { NATURE_LABELS } from "../dashboard/nature";
 
 type TxnType = "expense" | "income" | "transfer";
 
@@ -456,6 +458,7 @@ export default function TransactionsPage() {
   const [editCycleHint, setEditCycleHint] = useState<"current" | "next" | null>(null);
   const [editEventId, setEditEventId] = useState("");
   const [editCommitmentId, setEditCommitmentId] = useState(""); // CXP-03
+  const [editNature, setEditNature] = useState<ExpenseNature | "">(""); // CAT-03: "" = la de la categoría
   // MSI-08: una compra MSI no se edita aquí; solo se le puede cambiar el evento.
   const editingMsiParent = !!editingTxn?.installment_plan_id;
 
@@ -477,6 +480,7 @@ export default function TransactionsPage() {
     setEditCycleHint(null);
     setEditEventId(txn.event_id ?? "");
     setEditCommitmentId(txn.commitment_id ?? "");
+    setEditNature((txn.expense_nature_override as ExpenseNature | null) ?? "");
   }
 
   async function handleUpdate(e: FormEvent) {
@@ -522,6 +526,8 @@ export default function TransactionsPage() {
         event_id: editEventId || null, // EVT-02
         // CXP-03: solo un gasto puede ser abono; el vínculo se conserva al editar.
         commitment_id: editType === "expense" ? editCommitmentId || null : null,
+        // CAT-03: la naturaleza solo se sobreescribe en gastos; editar sin tocarla la conserva.
+        expense_nature_override: editType === "expense" ? editNature || null : null,
       });
       if (editHasFee) storeFeeIncluded(editAccountId, editFeeIncluded);
       setEditingTxn(null);
@@ -614,6 +620,15 @@ export default function TransactionsPage() {
     const accounts = new Map(accountList.map((a) => [a.id, a.name]));
     return { cats, accounts };
   }, [categories.data, accountList]);
+
+  // CAT-03/CAT-06: naturaleza que hereda el gasto de su categoría (la subcategoría
+  // sin naturaleza propia toma la del padre; sin ninguna cuenta como variable).
+  const editCategoryNature = useMemo(() => {
+    const cats = new Map((categories.data ?? []).map((c) => [c.id, c]));
+    const cat = cats.get(editCategoryId);
+    const parent = cat?.parent_id ? cats.get(cat.parent_id) : undefined;
+    return cat?.expense_nature ?? parent?.expense_nature ?? "variable";
+  }, [categories.data, editCategoryId]);
 
   // TAR-10: la moneda la define la cuenta elegida.
   const account = accountById.get(accountId);
@@ -1773,6 +1788,28 @@ export default function TransactionsPage() {
                     </option>
                   ))}
               </select>
+            </div>
+          )}
+
+          {editType === "expense" && (
+            <div>
+              <label className="label" htmlFor="edit-nature">Naturaleza</label>
+              <select
+                id="edit-nature"
+                className="input"
+                value={editNature}
+                onChange={(e) => setEditNature(e.target.value as ExpenseNature | "")}
+              >
+                <option value="">
+                  Según categoría ({NATURE_LABELS[editCategoryNature] ?? editCategoryNature})
+                </option>
+                {(["fixed", "variable", "discretionary"] as const).map((n) => (
+                  <option key={n} value={n}>{NATURE_LABELS[n]}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-ink-muted">
+                Solo para este movimiento; la categoría conserva su naturaleza.
+              </p>
             </div>
           )}
 
